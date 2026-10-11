@@ -30,6 +30,8 @@ layout(set = 0, binding = 0) uniform WaterFrame {
     vec4 fogParams;     // start, end, density, table mode (D3DFOG_*: 1 exp, 2 exp2, 3 linear; 0 = none)
     vec4 sky;           // rgb: the sky's colour overhead (from the frame's sky pixels; 0 = unknown); w: debug view
     vec4 env;           // x: 1 = the environment probe's atlas is bound (binding 12); y: its strength
+    vec4 ripple;        // x: 1 = the disturbance field is bound (binding 13); y: how visible (RVK_WakeGain);
+                        // z: 1 / its world size; w: its cell size
 } W;
 
 layout(set = 0, binding = 7) uniform sampler2D waterMap;       // R: height above W.mapInfo.x, G: water (0 / 1)

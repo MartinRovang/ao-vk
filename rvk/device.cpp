@@ -1458,6 +1458,7 @@ void Device::BeginFrame()
     UpdateLeaves();
     m_tessCharsPrev.swap(m_tessChars);           // characters drawn last frame (their rigid parts: TessellateDraw)
     m_tessChars.clear();
+    CollectWaterBodies();                        // the water's ripples follow the characters of the last frame
     m_windTimePrev = m_windTime;
     m_frameClock = SwayClock();
     m_windTime = std::fmod(m_frameClock, 3600.0);

@@ -487,6 +487,12 @@ public:
         float foam = 1.0f;
         float caustics = 1.0f;
         float gameTexture = 0.5f;                // the game's water texture on the surface (enhanced AO look)
+        float swimRipples = 2.0f;                // how hard characters in the water disturb it (RVK_WaterSwim)
+        float swimStir = 1.0f;                   // a character standing still stirs it (RVK_WakeStir)
+        float swimLife = 0.3f;                   // how long the disturbance lasts, relative (RVK_WakeLife)
+        float swimSpeed = 3.6f;                  // the waves' speed, m/s (RVK_WakeSpeed)
+        float swimGain = 2.0f;                   // how strongly it shows in the surface (RVK_WakeGain)
+        float swimSplash = 1.0f;                 // the splash of a character jumping in (RVK_WakeSplash)
         uint32_t quality = 2;                    // 1 low, 2 medium, 3 high: grid density, reflection steps
     };
     void SetWaterParams(const WaterParams& params) { m_waterParams = params; UpdateWaterReady(); }
@@ -1367,13 +1373,49 @@ private:
     uint64_t m_waterCopyFrame = ~0ull;
     uint64_t m_waterDraws = 0, m_waterTriangles = 0;
     uint32_t m_waterLogCount = 0;
+    // The characters of the last completed frame, merged (one body per character) and how each moves. They push the
+    // water's disturbance field (StepWaterSim, water_sim.comp), a wave equation on a grid round the camera: a body
+    // moving raises the water ahead of it and leaves a trough behind, so wakes, bow waves and their interference come
+    // out of the simulation. Collected per frame (CollectWaterBodies), the nearest few handed to the simulation. The
+    // simulation tests "in the water" itself (the feet below the surface there), so no water map is needed here.
+    struct WaterBody {
+        float x = 0, z = 0, minY = 0;   // world position, the box's lowest y
+        float vx = 0, vz = 0;           // its velocity (smoothed over frames)
+        float speed = 0;                // |v|
+        float centreY = 0;              // the box's mid height, and how fast it falls (m/s, smoothed): a jump in
+        float fall = 0;
+        float prevMinY = 0;             // the feet's height last frame: a splash is the feet crossing the surface
+        float phase = 0;                // its idle stirring's offset - kept while it is tracked
+    };
+    std::vector<WaterBody> m_waterBodies;
+    double m_waterBodiesTime = 0.0;
+    float m_waterDt = 1.0f / 60.0f;
+    uint32_t m_waterPhaseSeed = 2463534242u;
+    void CollectWaterBodies();
+    // The disturbance field: two states (ping-pong), RGBA16F, kept in the general layout; a compute pass steps it once
+    // a frame, when the water first draws.
+    VkDescriptorSetLayout m_waterSimSetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout m_waterSimLayout = VK_NULL_HANDLE;
+    VkPipeline m_waterSimPipeline = VK_NULL_HANDLE;
+    VkImage m_waterSim[2] = {};
+    VkImageView m_waterSimView[2] = {};
+    VmaAllocation_T* m_waterSimAllocation[2] = {};
+    uint32_t m_waterSimCur = 0;                  // the state the water reads
+    bool m_waterSimClear = true;                 // wipe it before the next step
+    bool m_waterSimLive = false;                 // the field is current (the water reads it)
+    float m_waterSimCell = 0.25f;
+    double m_waterSimLastTime = -1e9;
+    float m_waterSimCam[2] = {0, 0};
+    double m_waterSimTime = 0.0;
+    bool CreateWaterSim(std::string* error);
+    void StepWaterSim(VkCommandBuffer cmd, const WaterMap* map);
     bool CreateWaterResources(std::string* error);
     void DestroyWaterResources();
     void UpdateWaterReady();
     const WaterGrid* WaterGridFor(uint32_t segments);
     WaterMap* WaterMapFor(const WaterVertex* v, uint32_t count, const uint16_t* idx, uint32_t icount,
                           std::vector<uint32_t>& steep);
-    bool CopySceneForWater(VkCommandBuffer cmd);
+    bool CopySceneForWater(VkCommandBuffer cmd, const WaterMap* map);
     void WaterLog(const char* fmt, ...);
     bool CreateGrassResources(std::string* error);
     void DestroyGrassResources();

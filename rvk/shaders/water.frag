@@ -62,6 +62,25 @@ vec2 Ripples(vec2 xz, float t)
     return a * 0.55 + b * 0.75 + c * 0.3;
 }
 
+// The disturbance the characters stir (rvk StepWaterSim, water_sim.comp): a height field round the camera, tiled in
+// world space. Returns the surface slope (dh/dx, dh/dz) for the normal; xy of `state`: its height, rate.
+const float kSimN = 256.0;
+layout(set = 0, binding = 13) uniform sampler2D waterSim;
+
+vec2 Disturbance(vec2 xz, out vec3 state)
+{
+    vec2 uv = xz * W.ripple.z;
+    float e = 1.0 / kSimN;
+    float hl = texture(waterSim, uv - vec2(e, 0.0)).x, hr = texture(waterSim, uv + vec2(e, 0.0)).x;
+    float hd = texture(waterSim, uv - vec2(0.0, e)).x, hu = texture(waterSim, uv + vec2(0.0, e)).x;
+    state = texture(waterSim, uv).xyz;
+    // Faded out towards the field's edge (its outermost band is wiped as the camera moves).
+    float away = max(abs(xz.x - W.camera.x), abs(xz.y - W.camera.z));
+    float fade = 1.0 - smoothstep(0.28, 0.4, away * W.ripple.z);
+    state *= fade;
+    return vec2(hr - hl, hu - hd) / (2.0 * W.ripple.w) * fade;
+}
+
 // Caustics on the bottom at a world point: the bright web where two drifting layers of cells meet.
 float Caustics(vec2 xz, float t)
 {
@@ -179,6 +198,10 @@ void main()
     if (dot(N, V) < 0.0 && mesh) N = -N;
     float rippleFade = 1.0 - smoothstep(25.0, 220.0, dist);
     vec2 slope = mesh ? vec2(0.0) : Ripples(vPos.xz, t) * (W.look2.z * 0.22 * rippleFade);
+    // Characters in the water disturb the surface around them (the simulated field: wakes, bow waves, their rings).
+    vec3 disturb = vec3(0.0);
+    if (!mesh && W.ripple.x > 0.5)
+        slope += Disturbance(vPos.xz, disturb) * (3.0 * W.ripple.y * rippleFade);
     N = normalize(N + vec3(-slope.x, 0.0, -slope.y));
     bool under = !mesh && eye.y < vRest.y;
     vec3 Ns = under ? -N : N;
@@ -314,6 +337,7 @@ void main()
     int debugView = int(W.sky.w);
     if (debugView == 1) outScene = vec4(zWater / 100.0, min(zR, 1e3) / 100.0, path / 10.0, 1.0);
     else if (debugView == 2) outScene = vec4(N * 0.5 + 0.5, 1.0);
+    else if (debugView == 5) outScene = vec4(max(disturb.x, 0.0) * 6.0, max(-disturb.x, 0.0) * 6.0, 0.0, 1.0);
     else if (debugView == 3) outScene = vec4(texture(waterMap, MapUv(vRest.xz)).g, texture(waterMap, MapUv(vRest.xz)).r + 0.5, 0.0, 1.0);
     outGlow = vec4(0.0);
     // Local lights' share 0, reflectivity 0 (the water reflects by itself; the screen-space pass would add it twice),

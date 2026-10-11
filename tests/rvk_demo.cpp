@@ -8,6 +8,8 @@
 #include "threaded.h"
 #include "material_maps.h"
 
+#include <chrono>
+#include <thread>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -1385,6 +1387,10 @@ bool g_waterPool = false;         // --water-pool: the lake's water only a 6 x 6
 bool g_waterWall = false;         // --water-wall: a steep sheet of the water mesh standing in the lake (a fall)
 bool g_waterShelf = false;        // --water-shelf: the mesh terraced - the surface with a lower shore shelf in front
                                   // (as Anarchy Online hangs its aprons), which used to render as a "mountain of water"
+bool g_waterWalker = false;       // --water-walker: a "character" standing in the lake with its feet under the surface,
+                                  // bobbing along: the surface ripples around it (RVK_WaterSwim)
+bool g_waterJump = false;         // --water-jump: the walker jumps out of the water and lands (RVK_WakeSplash)
+float g_waterSwim = 1.0f;         // --water-swim S: strength of those ripples (RVK_WaterSwim)
 
 template <typename D>
 void RunWaterScene(D& dev, int frames, const std::string& shot)
@@ -1505,6 +1511,7 @@ void RunWaterScene(D& dev, int frames, const std::string& shot)
     Device::WaterParams wp;
     wp.style = g_waterStyle;
     wp.waves = g_waterWaves;
+    wp.swimRipples = g_waterSwim;
     wp.quality = uint32_t(g_waterQuality);
     dev.SetWaterParams(wp);
     if (g_waterNoPrepass)
@@ -1585,6 +1592,30 @@ void RunWaterScene(D& dev, int frames, const std::string& shot)
         dev.SetTexture(0, nullptr);
         dev.SetTextureStageState(0, TSS_COLOROP, TOP_SELECTARG2);
         dev.DrawPrimitive(TriangleList, kFvfMesh, props.data(), uint32_t(props.size()));
+        // A "character" swimming (--water-walker): a tall body in the lake, its feet under the surface, bobbing along.
+        // Flagged a character (SetDrawVisual), so the renderer knows where it is - and ripples the water around it.
+        if (g_waterWalker) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));   // (the demo renders faster than the game: the
+                                                                          //  water's simulation runs on real time)
+            std::vector<VtxMesh> cv;
+            std::vector<uint16_t> ci;
+            // --water-jump: leaps out of the water every 90 frames (a 1.5 s arc) and lands again: a splash.
+            float jumpUp = 0.0f;
+            if (g_waterJump) {
+                const float u = float(frame % 90) / 90.0f;
+                jumpUp = 11.0f * u * (1.0f - u);
+            }
+            const float wx = g_waterJump ? 5.0f : 5.0f + 6.0f * std::sin(float(frame) * 0.012f);   // ~4 m/s at 60 fps
+            AddCube(cv, ci, wx, 0.0f, 36.0f, 0.3f);
+            for (VtxMesh& m : cv) {
+                m.y = m.y * 3.0f + 0.12f * std::sin(float(frame) * 0.4f) + jumpUp;   // 1.8 tall: feet ~0.9 under the water
+                if (m.y > 0.2f)
+                    m.x += 0.05f * std::sin(frame * 0.7f);
+            }
+            dev.SetDrawVisual(uint32_t(VisualKind::Character), "swimmer");
+            dev.DrawPrimitive(TriangleList, kFvfMesh, cv.data(), uint32_t(cv.size()));
+            dev.SetDrawVisual(0, nullptr);
+        }
         // The water, last of the opaque scene (the game draws it from its sorted list after the solid world).
         dev.SetRenderState(RS_LIGHTING, 0);
         dev.SetRenderState(RS_ALPHABLENDENABLE, 1);
@@ -2710,6 +2741,9 @@ int main(int argc, char** argv)
         else if (a == "--water-wall") g_waterWall = true;
         else if (a == "--water-shelf") g_waterShelf = true;
         else if (a == "--water-pool") g_waterPool = true;
+        else if (a == "--water-walker") g_waterWalker = true;
+        else if (a == "--water-jump") { g_waterWalker = true; g_waterJump = true; }
+        else if (a == "--water-swim" && i + 1 < argc) g_waterSwim = float(std::atof(argv[++i]));
         else if (a == "--water-shadows") shadows = true;   // (the coast's camera then goes wrong from frame 2: not the water's)
         else if (a == "--water-style" && i + 1 < argc) g_waterStyle = float(std::atof(argv[++i]));
         else if (a == "--water-yaw" && i + 1 < argc) g_waterYaw = float(std::atof(argv[++i]));

@@ -110,6 +110,12 @@ Setting g_settings[] = {
     {"RVK_WaterQual",  "Quality (1 low, 2 medium, 3 high)",                        "Experimental",     Int,   1, 3, 1, 2, nullptr, 0, "RVK_WaterOn"},
     {"RVK_WaterWaves", "Wave height",                                              "Experimental",     Float, 0, 3, 0.1f, 0.3f, nullptr, 0, "RVK_WaterOn"},
     {"RVK_WaterRipple","Ripples",                                                  "Experimental",     Float, 0, 2, 0.1f, 1, nullptr, 0, "RVK_WaterOn"},
+    {"RVK_WaterSwim",  "Wake strength (characters in the water)",                  "Experimental",     Float, 0, 3, 0.1f, 2, nullptr, 0, "RVK_WaterOn"},
+    {"RVK_WakeGain","Wake visibility",                                        "Experimental",     Float, 0, 4, 0.1f, 2, nullptr, 0, "RVK_WaterOn"},
+    {"RVK_WakeLife","Wake duration",                                          "Experimental",     Float, 0.2f, 4, 0.1f, 0.3f, nullptr, 0, "RVK_WaterOn"},
+    {"RVK_WakeSpeed","Wake speed (how fast the waves travel, m/s)",           "Experimental",     Float, 0.5f, 4, 0.1f, 3.6f, nullptr, 0, "RVK_WaterOn"},
+    {"RVK_WakeStir","Treading water (a character standing still)",           "Experimental",     Float, 0, 4, 0.1f, 1, nullptr, 0, "RVK_WaterOn"},
+    {"RVK_WakeSplash","Splash (jumping into the water)",                       "Experimental",     Float, 0, 4, 0.1f, 1, nullptr, 0, "RVK_WaterOn"},
     {"RVK_WaterRefl",  "Reflections",                                              "Experimental",     Float, 0, 1.5f, 0.05f, 1, nullptr, 0, "RVK_WaterOn"},
     {"RVK_WaterRefr",  "Refraction (bending what is seen through it)",            "Experimental",     Float, 0, 2, 0.1f, 1, nullptr, 0, "RVK_WaterOn"},
     {"RVK_WaterClear", "Clarity (how far one sees into it)",                       "Experimental",     Float, 0.2f, 4, 0.1f, 1, nullptr, 0, "RVK_WaterOn"},
@@ -407,13 +413,19 @@ void ApplyOne(const Setting& s, rvk::ThreadedDevice* d)
     else if (is("RVK_Gi") || is("RVK_GiRadius")) d->SetGi(V("RVK_Gi"), V("RVK_GiRadius"));
     else if (std::strncmp(n, "RVK_Ssr", 7) == 0)
         d->SetSsr(V("RVK_Ssr"), V("RVK_SsrWater"), V("RVK_SsrGloss"), V("RVK_SsrWet"));
-    else if (std::strncmp(n, "RVK_Water", 9) == 0) {
+    else if (std::strncmp(n, "RVK_Water", 9) == 0 || std::strncmp(n, "RVK_Wake", 8) == 0) {
         rvk::Device::WaterParams w;
         w.enable = V("RVK_WaterOn") != 0.0f;
         w.style = V("RVK_WaterStyle");
         w.quality = uint32_t(V("RVK_WaterQual"));
         w.waves = V("RVK_WaterWaves");
         w.ripples = V("RVK_WaterRipple");
+        w.swimRipples = V("RVK_WaterSwim");
+        w.swimGain = V("RVK_WakeGain");
+        w.swimLife = V("RVK_WakeLife");
+        w.swimSpeed = V("RVK_WakeSpeed");
+        w.swimStir = V("RVK_WakeStir");
+        w.swimSplash = V("RVK_WakeSplash");
         w.reflections = V("RVK_WaterRefl");
         w.refraction = V("RVK_WaterRefr");
         w.clarity = V("RVK_WaterClear");
