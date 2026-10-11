@@ -2,8 +2,9 @@
 //
 // The game's water is a few huge flat triangles per body. We draw a camera-centred polar grid instead (dense near the
 // camera, coarser with distance: no cracks, one mesh), lifted onto the water by the water map - a top-down image of
-// the game's triangles: R the surface's height (relative to W.mapInfo.x), G whether there is water there - and moved
-// by a sum of Gerstner waves. Small ripples are normals only (the detail texture, in water.frag).
+// the game's triangles: R the surface's height (relative to W.mapInfo.x, each connected body flattened to its own
+// level), G whether there is water there - and moved by a sum of Gerstner waves. Small ripples are normals only (the
+// detail texture, in water.frag).
 #include "frame_lights.glsl"                    // FL (binding 4): the sun, its cascades, the TAA jitter
 
 layout(set = 0, binding = 0) uniform WaterFrame {

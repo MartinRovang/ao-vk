@@ -7,8 +7,9 @@
 // The game's water triangles are huge (it subdivides only edges over 10000 units), so they can't carry waves. We draw
 // a polar grid around the camera instead (water.vert: rings growing geometrically, as dense as their distance needs;
 // one mesh, no cracks), lifted onto the water by a water map - the game's flat triangles rasterised top-down into an
-// image (R: the surface's height, G: water here) - and moved by Gerstner waves. Steep triangles (falls) are drawn as
-// they are (mesh mode).
+// image (R: the surface's height, G: water here) - and moved by Gerstner waves. Each connected body is baked flat at
+// its own level (the game hangs shore aprons and skirts below the surface, which the coarse far grid would turn into
+// terraces - "mountains of water"). Steep triangles (falls) are drawn as they are (mesh mode).
 //
 // Drawn where the game draws its water, in the scene's rendering: what is under and behind the water must be known,
 // so the scene's colour and depth are copied first (once a frame) and the water drawn opaque over them (water.frag:
@@ -410,6 +411,7 @@ Device::WaterMap* Device::WaterMapFor(const WaterVertex* v, uint32_t count, cons
     struct Tri { uint32_t a, b, c; };
     std::vector<Tri> flat;
     float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+    float flatLoY = 1e30f, flatHiY = -1e30f;         // the flat triangles' height span (a step = mountains)
     double heightSum = 0.0;
     for (uint32_t t = 0; t + 2 < icount; t += 3) {
         uint32_t i0 = idx[t], i1 = idx[t + 1], i2 = idx[t + 2];
@@ -429,11 +431,14 @@ Device::WaterMap* Device::WaterMapFor(const WaterVertex* v, uint32_t count, cons
             continue;
         }
         flat.push_back({i0, i1, i2});
-        for (const float* p : {p0, p1, p2})
+        for (const float* p : {p0, p1, p2}) {
+            flatLoY = std::min(flatLoY, p[1]);
+            flatHiY = std::max(flatHiY, p[1]);
             for (int k = 0; k < 3; ++k) {
                 lo[k] = std::min(lo[k], p[k]);
                 hi[k] = std::max(hi[k], p[k]);
             }
+        }
         heightSum += double(p0[1] + p1[1] + p2[1]) / 3.0;
     }
     if (flat.empty())
@@ -470,6 +475,7 @@ Device::WaterMap* Device::WaterMapFor(const WaterVertex* v, uint32_t count, cons
     m.flatTriangles = uint32_t(flat.size());
     m.colour = v[flat.front().a].colour;
     std::vector<uint16_t> pixels(size_t(w) * h * 4, 0);
+    std::vector<float> heights(size_t(w) * h, 0.0f);  // wet texels' surface height, y - m.base (written below)
     const uint16_t one = ToHalf(1.0f);
     for (const Tri& t : flat) {
         const float* a = v[t.a].pos;
@@ -498,11 +504,87 @@ Device::WaterMap* Device::WaterMapFor(const WaterVertex* v, uint32_t count, cons
                 if (l0 < -slack || l1 < -slack || l2 < -slack)
                     continue;
                 float y = l0 * a[1] + l1 * b[1] + l2 * c[1];
-                uint16_t* px4 = &pixels[(size_t(z) * w + x) * 4];
-                px4[0] = ToHalf(y - m.base);
-                px4[1] = one;
+                size_t idx = size_t(z) * w + x;
+                heights[idx] = y - m.base;
+                pixels[idx * 4 + 0] = 0;             // the height is written once the levels are known (below)
+                pixels[idx * 4 + 1] = one;           // water here
             }
     }
+    // A water body's mesh hangs shore aprons and skirts below its surface, holds thin high tails (a waterfall's lip),
+    // and one mesh may hold several bodies; far from the camera the polar grid is coarse enough to build those steps
+    // into "mountains of water". Split the wet texels into connected bodies (a flood fill) and give each one flat its
+    // own surface height, so each body reads as one sheet at its level.
+    std::vector<int32_t> body(size_t(w) * h, -1);        // a wet texel's body (-1 = dry)
+    std::vector<float> bodyLevel;                        // each body's level, relative to m.base (the mean height)
+    std::vector<int32_t> stack;
+    for (uint32_t z = 0; z < h; ++z)
+        for (uint32_t x = 0; x < w; ++x) {
+            const size_t start = size_t(z) * w + x;
+            if (!pixels[start * 4 + 1] || body[start] >= 0)
+                continue;
+            const int id = int(bodyLevel.size());
+            stack.assign(1, int32_t(start));
+            body[start] = id;
+            std::vector<float> hs;
+            while (!stack.empty()) {
+                const int32_t cur = stack.back();
+                stack.pop_back();
+                hs.push_back(heights[size_t(cur)]);
+                const uint32_t cz = uint32_t(cur) / w, cx = uint32_t(cur) % w;
+                const int32_t n[4] = {cx ? cur - 1 : -1, cx + 1 < w ? cur + 1 : -1,
+                                      cz ? cur - int32_t(w) : -1, cz + 1 < h ? cur + int32_t(w) : -1};
+                for (int32_t k : n)
+                    if (k >= 0 && pixels[size_t(k) * 4 + 1] && body[size_t(k)] < 0) {
+                        body[size_t(k)] = id;
+                        stack.push_back(k);
+                    }
+            }
+            // The level: the body's flat surface - the highest height a substantial part of its area lies at (a
+            // plateau). This ignores both a thin high tail (a waterfall's lip, which pulls a top percentile up) and a
+            // spread-out low apron (which pulls a most-common height down). Each body is then flat at its own level.
+            float mn = 1e30f, mx = -1e30f;
+            for (float h : hs) { mn = std::min(mn, h); mx = std::max(mx, h); }
+            const float binW = 0.5f;                 // world units: the level's resolution
+            const int nb = std::min(8192, std::max(1, int((mx - mn) / binW) + 1));
+            std::vector<uint64_t> area(size_t(nb), 0);
+            for (float h : hs)
+                ++area[size_t(std::min(nb - 1, std::max(0, int((h - mn) / binW))))];
+            uint64_t maxArea = 0;
+            for (uint64_t c : area)
+                maxArea = std::max(maxArea, c);
+            int levelBin = 0;
+            for (int b = nb - 1; b >= 0; --b)
+                if (area[size_t(b)] * 10 >= maxArea) {   // at least a tenth of the fullest: a plateau, not a tail
+                    levelBin = b;
+                    break;
+                }
+            int loBin = levelBin;                    // the plateau's whole run of bins (the surface, not just its top)
+            while (loBin > 0 && area[size_t(loBin - 1)] * 10 >= maxArea)
+                --loBin;
+            float level = mn + (float(levelBin) + 0.5f) * binW;
+            {
+                double sum = 0.0;
+                uint64_t count = 0;
+                for (float h : hs) {
+                    const int b = std::min(nb - 1, std::max(0, int((h - mn) / binW)));
+                    if (b >= loBin && b <= levelBin) { sum += double(h); ++count; }
+                }
+                if (count)
+                    level = float(sum / double(count));
+            }
+            bodyLevel.push_back(level);
+        }
+    // The shader adds the map's base to the stored height: put the lowest level in the base and store each texel at
+    // its body's level (constant across the body), so every body reads as one flat sheet at its own height.
+    float minLevel = 0.0f;
+    if (!bodyLevel.empty())
+        minLevel = *std::min_element(bodyLevel.begin(), bodyLevel.end());
+    for (size_t i = 0; i < heights.size(); ++i) {
+        if (!pixels[i * 4 + 1])
+            continue;
+        pixels[i * 4 + 0] = ToHalf(bodyLevel[size_t(body[i])] - minLevel);
+    }
+    m.base += minLevel;
     m.texture = CreateImage(w, h, Format::RGBA16F, 1, false);
     if (!m.texture)
         return nullptr;
@@ -513,10 +595,14 @@ Device::WaterMap* Device::WaterMapFor(const WaterVertex* v, uint32_t count, cons
     for (const Tri& t : flat)
         for (uint32_t i : {t.a, t.b, t.c}) { uint32_t a = v[i].colour >> 24; flatLo = std::min(flatLo, a); flatHi = std::max(flatHi, a); }
     for (uint32_t i : steep) { uint32_t a = v[i].colour >> 24; steepLo = std::min(steepLo, a); steepHi = std::max(steepHi, a); }
-    WaterLog("water map %016llx: %u flat + %u steep triangles, %.0f x %.0f units at y %.1f, %u x %u texels of %.2f; "
-             "vertex alpha flat %u..%u, steep %u..%u",
+    WaterLog("water map %016llx: %u flat + %u steep triangles, %.0f x %.0f units, %zu bodies at y %.2f..%.2f, "
+             "%u x %u texels of %.2f; vertex alpha flat %u..%u, steep %u..%u; flat triangle heights %.2f..%.2f",
              (unsigned long long)key, m.flatTriangles, uint32_t(steep.size() / 3), double(ex), double(ez),
-             double(m.base), w, h, double(texel), flatLo, flatHi, steep.empty() ? 0u : steepLo, steepHi);
+             bodyLevel.size(), double(m.base),
+             bodyLevel.empty() ? double(m.base)
+                               : double(m.base + (*std::max_element(bodyLevel.begin(), bodyLevel.end()) - minLevel)),
+             w, h, double(texel), flatLo, flatHi, steep.empty() ? 0u : steepLo, steepHi,
+             double(flatLoY), double(flatHiY));
     return &m_waterMaps.back();
 }
 

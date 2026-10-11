@@ -1383,6 +1383,8 @@ bool g_hudSprite = false;         // --hud-sprite: after the 3D, a screen sprite
 bool g_waterPool = false;         // --water-pool: the lake's water only a 6 x 6 pool in front (Jobe's harbour: no water
                                   // may spread beyond it - the rest of the bowl stays dry)
 bool g_waterWall = false;         // --water-wall: a steep sheet of the water mesh standing in the lake (a fall)
+bool g_waterShelf = false;        // --water-shelf: the mesh terraced - the surface with a lower shore shelf in front
+                                  // (as Anarchy Online hangs its aprons), which used to render as a "mountain of water"
 
 template <typename D>
 void RunWaterScene(D& dev, int frames, const std::string& shot)
@@ -1479,10 +1481,22 @@ void RunWaterScene(D& dev, int frames, const std::string& shot)
         water = {{{-90, 0, -40}, tint}, {{90, 0, -40}, tint}, {{90, 0, 130}, tint}, {{-90, 0, 130}, tint}};
     if (g_waterPool)
         water = {{{-3, 0, 17}, tint}, {{3, 0, 17}, tint}, {{3, 0, 23}, tint}, {{-3, 0, 23}, tint}};
-    std::vector<uint16_t> waterIdx = {0, 1, 2, 0, 2, 3};
+    std::vector<uint16_t> waterIdx;
+    if (g_waterShelf) {
+        // The surface with a lower shelf in front, sharing no edge with it (z 55): the mesh steps down 4 units, as
+        // Anarchy Online's shore aprons do. The lower shelf is deliberately the larger part, so the body's level must
+        // come from the top (its surface), not from where most of the area lies.
+        water = {{{-90, -4, -40}, tint}, {{90, -4, -40}, tint}, {{90, -4, 55}, tint}, {{-90, -4, 55}, tint},
+                 {{-90, 0, 55}, tint},  {{90, 0, 55}, tint},  {{90, 0, 130}, tint},  {{-90, 0, 130}, tint}};
+        waterIdx = {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7};
+    } else {
+        waterIdx = {0, 1, 2, 0, 2, 3};
+    }
     if (g_waterWall) {                    // upright, 8 units tall, with the rock behind it 10 units further back
+        const uint16_t base = uint16_t(water.size());
         water.insert(water.end(), {{{-30, 0, 60}, tint}, {{30, 0, 60}, tint}, {{30, 8, 60}, tint}, {{-30, 8, 60}, tint}});
-        waterIdx.insert(waterIdx.end(), {4, 5, 6, 4, 6, 7});
+        waterIdx.insert(waterIdx.end(), {base, uint16_t(base + 1), uint16_t(base + 2), base, uint16_t(base + 2),
+                                         uint16_t(base + 3)});
     }
 
     Device::PbrSettings pbr;                 // (the environment probe the water reflects: --pbr-probe)
@@ -2694,6 +2708,7 @@ int main(int argc, char** argv)
         else if (a == "--water-lake") { g_waterScene = 1; hdr = true; }
         else if (a == "--water-coast") { g_waterScene = 2; hdr = true; }
         else if (a == "--water-wall") g_waterWall = true;
+        else if (a == "--water-shelf") g_waterShelf = true;
         else if (a == "--water-pool") g_waterPool = true;
         else if (a == "--water-shadows") shadows = true;   // (the coast's camera then goes wrong from frame 2: not the water's)
         else if (a == "--water-style" && i + 1 < argc) g_waterStyle = float(std::atof(argv[++i]));
