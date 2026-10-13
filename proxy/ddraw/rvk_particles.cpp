@@ -39,9 +39,10 @@ struct GameSprite {
 };
 static_assert(sizeof(GameSprite) == 32, "DiaBill_n::Sprite_t");
 
-// _GfxControlStars_t (Gamecode.dll, image base 0x10000000).
-constexpr uint32_t kStarsVtable = 0x1016CD6C - 0x10000000, kStarsUpdateSlot = 1;
-constexpr uint32_t kStarsUpdate = 0x100F7F3C - 0x10000000;
+// _GfxControlStars_t (Gamecode.dll). Its vtable is looked up by name (FindVtable): Gamecode.dll differs between
+// client builds (18.8.50, 18.8.62) and the class sits at another address in each, with the same layout.
+constexpr char kStarsType[] = ".?AV_GfxControlStars_t@@";
+constexpr uint32_t kStarsUpdateSlot = 1;
 constexpr uint32_t kControlTemplate = 0x4, kStarsVisual = 0x40;
 
 using RenderFn = uint32_t(__thiscall*)(void* self, void* viewport);
@@ -97,12 +98,56 @@ bool Chosen(uint32_t id)
     return false;
 }
 
+const IMAGE_NT_HEADERS* NtHeaders(HMODULE module)
+{
+    auto* base = reinterpret_cast<const uint8_t*>(module);
+    return reinterpret_cast<const IMAGE_NT_HEADERS*>(base + reinterpret_cast<const IMAGE_DOS_HEADER*>(base)->e_lfanew);
+}
+
+// The vtable (rva) of a class in a loaded module, found through its MSVC type information instead of a fixed
+// address: type name -> type descriptor (8 bytes before the name) -> complete object locator (names the descriptor
+// 12 bytes in, starts with a zero signature) -> vtable (the word after the one pointing at the locator). 0 unless
+// every step has exactly one answer.
+uint32_t FindVtable(HMODULE module, const char* typeName)
+{
+    auto* base = reinterpret_cast<const uint8_t*>(module);
+    const IMAGE_NT_HEADERS* nt = NtHeaders(module);
+    const IMAGE_SECTION_HEADER* sections = IMAGE_FIRST_SECTION(nt);
+    auto find = [&](const void* bytes, size_t size) {
+        std::vector<const uint8_t*> found;
+        for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
+            if (sections[i].Characteristics & IMAGE_SCN_MEM_DISCARDABLE)
+                continue;                             // (.reloc: may be gone once the module is loaded)
+            const uint8_t* at = base + sections[i].VirtualAddress;
+            for (const uint8_t* end = at + sections[i].Misc.VirtualSize; at + size <= end; ++at)
+                if (!memcmp(at, bytes, size))
+                    found.push_back(at);
+        }
+        return found;
+    };
+    auto names = find(typeName, strlen(typeName) + 1);
+    if (names.size() != 1)
+        return 0;
+    auto descriptor = reinterpret_cast<uintptr_t>(names[0] - 8);
+    std::vector<const uint8_t*> locators;
+    for (const uint8_t* ref : find(&descriptor, sizeof(descriptor)))
+        if (ref - 12 >= base && *reinterpret_cast<const uint32_t*>(ref - 12) == 0)
+            locators.push_back(ref - 12);
+    if (locators.size() != 1)
+        return 0;
+    auto locator = reinterpret_cast<uintptr_t>(locators[0]);
+    auto tables = find(&locator, sizeof(locator));
+    return tables.size() == 1 ? static_cast<uint32_t>(tables[0] + 4 - base) : 0;
+}
+
+// expected: the function the slot must hold (rva), or 0 for "any function of this module" (a vtable found by name).
 bool PatchSlot(HMODULE module, uint32_t vtable, uint32_t slot, uint32_t expected, void* hook, void** original,
                const char* what)
 {
     auto base = reinterpret_cast<uintptr_t>(module);
     auto* entry = reinterpret_cast<uintptr_t*>(base + vtable + 4 * slot);
-    if (*entry != base + expected) {
+    if (expected ? *entry != base + expected
+                 : *entry < base || *entry >= base + NtHeaders(module)->OptionalHeader.SizeOfImage) {
         RvkLog("particles: %s vtable slot is %p, expected %p - unknown client version, particles off", what,
                (void*)*entry, (void*)(base + expected));
         return false;
@@ -230,14 +275,18 @@ void ParticleFrame()
         return;
     }
     g_render = reinterpret_cast<RenderFn>(render);
-    if (!PatchSlot(gc, kStarsVtable, kStarsUpdateSlot, kStarsUpdate, reinterpret_cast<void*>(&StarsUpdate), &update,
-                   "_GfxControlStars_t::Update")) {
+    uint32_t stars = FindVtable(gc, kStarsType);
+    if (!stars)
+        RvkLog("particles: _GfxControlStars_t not found in Gamecode.dll - unknown client version, particles off");
+    if (!stars || !PatchSlot(gc, stars, kStarsUpdateSlot, 0, reinterpret_cast<void*>(&StarsUpdate), &update,
+                             "_GfxControlStars_t::Update")) {
         g_gaveUp = true;                              // the render hook stays in, but no effect is ever chosen
         return;
     }
     g_update = reinterpret_cast<UpdateFn>(update);
     g_installed = true;
-    RvkLog("particles: hooks installed (DisplaySystem %p, Gamecode %p)", (void*)ds, (void*)gc);
+    RvkLog("particles: hooks installed (DisplaySystem %p, Gamecode %p, _GfxControlStars_t vtable at rva 0x%x)",
+           (void*)ds, (void*)gc, stars);
 }
 
 }  // namespace rvkproxy
