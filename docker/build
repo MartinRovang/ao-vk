@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Builds randy31.dll inside the toolchain image, so the host needs only Docker.
+# Usage: docker/build        -> build/linux-release/randy31.dll
+set -euo pipefail
+here="$(cd "$(dirname "$0")/.." && pwd)"
+docker image inspect ao-vk-build >/dev/null 2>&1 || docker build -t ao-vk-build "$here/docker"
+# Ubuntu's Clang builds 32-bit code without SSE2 unless told (even with /arch:SSE2); MSVC and stock clang-cl assume it.
+docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e CFLAGS=/clang:-msse2 -e CXXFLAGS=/clang:-msse2 \
+    -v "$here":/src -w /src ao-vk-build sh -c '
+  cmake --preset linux-release -DXWIN_DIR=/opt/xwin -DVULKAN_SDK_DIR=/opt/vulkan/x86_64 &&
+  cmake --build --preset linux-release'
